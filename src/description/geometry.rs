@@ -1785,22 +1785,21 @@ impl LaserProtocol {
 #[cfg(test)]
 mod tests {
     use crate::geometry::{BeamGeometry, ColorType, LaserGeometry};
-    use crate::values::{Matrix, Name};
 
     #[test]
     fn parse_laser_single_wavelength() {
         let xml = r#"<Laser BeamDiameter="0.0" BeamDivergenceMax="0.0" BeamDivergenceMin="0.0" Color="638.0" ColorType="SingleWaveLength" Name="Laser" OutputStrength="0.02" Position="{1.0,0.0,0.0,0.0}{0.0,1.0,0.0,0.0}{0.0,0.0,1.0,0.0}{0.0,0.0,0.0,1.0}" ScanAnglePan="0.0" ScanAngleTilt="0.0" ScanSpeed="0.0"/>"#;
         let g: LaserGeometry = quick_xml::de::from_str(xml).expect("parse");
-        std::assert_matches!(g.color_type, ColorType::SingleWaveLength);
-        std::assert_matches!(g.color, Some(638.));
+        assert!(matches!(g.color_type, ColorType::SingleWaveLength));
+        assert_eq!(g.color, Some(638.));
     }
 
     #[test]
     fn parse_laser_rgb_default() {
         let xml = r#"<Laser BeamDiameter="0.0" BeamDivergenceMax="0.0" BeamDivergenceMin="0.0" Name="Laser" OutputStrength="0.02" Position="{1.0,0.0,0.0,0.0}{0.0,1.0,0.0,0.0}{0.0,0.0,1.0,0.0}{0.0,0.0,0.0,1.0}" ScanAnglePan="0.0" ScanAngleTilt="0.0" ScanSpeed="0.0"/>"#;
         let g: LaserGeometry = quick_xml::de::from_str(xml).expect("parse");
-        std::assert_matches!(g.color_type, ColorType::Rgb);
-        std::assert_matches!(g.color, None);
+        assert!(matches!(g.color_type, ColorType::Rgb));
+        assert_eq!(g.color, None);
     }
 
     #[test]
