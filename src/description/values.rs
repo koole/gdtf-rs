@@ -292,7 +292,7 @@ impl NodeExt for [Name] {
 /// ```text
 /// x,y,Y
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy)]
 pub struct ColorCie {
     /// CIE x value
     pub x: f64,
@@ -302,6 +302,20 @@ pub struct ColorCie {
 
     /// CIE Y value
     pub z: f64,
+
+    /// Set when the source text did not match the ColorCIE grammar and this
+    /// value is the substituted white point rather than authored data. Read it
+    /// through [`ColorCie::is_substituted`].
+    substituted: bool,
+}
+
+/// Provenance is metadata about where a value came from, not part of what the
+/// value means, so a substituted white point compares equal to an authored one.
+/// [`ColorCie::is_substituted`] is the only thing that separates them.
+impl PartialEq for ColorCie {
+    fn eq(&self, other: &Self) -> bool {
+        self.x == other.x && self.y == other.y && self.z == other.z
+    }
 }
 
 impl Serialize for ColorCie {
@@ -331,13 +345,32 @@ impl<'de> Deserialize<'de> for ColorCie {
             where
                 E: Error,
             {
-                let fields = v.split(',').map(|field_str| {
-                    field_str.trim().parse::<f64>().map_err(|_| {
-                        E::invalid_value(Unexpected::Str(field_str), &"a floating point number")
-                    })
-                });
-                let [x, y, z] = take_three(fields, || E::invalid_value(Unexpected::Str(v), &self))?;
-                Ok(ColorCie { x, y, z })
+                // A value that does not match the grammar degrades this one
+                // element; it never fails the archive. One malformed `Color=`
+                // costs a whole fixture otherwise, and the attribute is
+                // usually one the reader never looks at.
+                //
+                // The substitute is the white point, matching both reference
+                // implementations: libMVRgdtf falls back to a
+                // default-constructed `CCieColor` (its "pure white") and
+                // pygdtf's `ColorCIE` except-branch falls back to the same.
+                let fields = v
+                    .split(',')
+                    .map(|field_str| field_str.trim().parse::<f64>().ok());
+                let Ok([Some(x), Some(y), Some(z)]) = take_three(fields.map(Ok::<_, ()>), || ())
+                else {
+                    return Ok(ColorCie::substitute());
+                };
+                // GDTF types each component as a Float and the published XSD
+                // pins it to `-?[0-9]+(\.[0-9]+)?`, so NaN and the infinities
+                // are not ColorCIE however they are spelled. Rust, C and
+                // Python all parse a bare `nan` as a float, so without this a
+                // NaN authored by a broken builder reaches the colour path
+                // silently.
+                if !x.is_finite() || !y.is_finite() || !z.is_finite() {
+                    return Ok(ColorCie::substitute());
+                }
+                Ok(ColorCie::new(x, y, z))
             }
         }
 
@@ -346,15 +379,41 @@ impl<'de> Deserialize<'de> for ColorCie {
 }
 
 impl ColorCie {
+    /// Constructs a color from its CIE xyY components.
+    pub const fn new(x: f64, y: f64, z: f64) -> Self {
+        ColorCie {
+            x,
+            y,
+            z,
+            substituted: false,
+        }
+    }
+
     /// Constructs a pure white color.
     ///
     /// Pure white is represented with the values x=0.3127, y=0.3290, Y=100.
     pub const fn white() -> Self {
+        ColorCie::new(0.3127, 0.3290, 100.)
+    }
+
+    /// The white point, marked as standing in for source text that did not
+    /// match the ColorCIE grammar.
+    const fn substitute() -> Self {
         ColorCie {
-            x: 0.3127,
-            y: 0.3290,
-            z: 100.,
+            substituted: true,
+            ..ColorCie::white()
         }
+    }
+
+    /// Whether this value was substituted by the parser because the source
+    /// text did not match the ColorCIE grammar.
+    ///
+    /// A substituted color is the white point of [`ColorCie::white`]; the
+    /// source text it replaced is not retained. The corresponding
+    /// [`ValidationError`](crate::ValidationError) names the element it sits
+    /// on.
+    pub const fn is_substituted(self) -> bool {
+        self.substituted
     }
 }
 
@@ -746,14 +805,46 @@ impl DmxAddress {
 /// Mirroring format: value/n
 /// Shifting format: value/ns
 /// ```
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy)]
 pub struct DmxValue {
     bytes: NonZeroU8,
     value: u64,
     shifting: bool,
+    substituted: bool,
+}
+
+/// Provenance is metadata about where a value came from, not part of what the
+/// value means, so a substituted `0/1` addresses the same DMX slot as an
+/// authored `0/1` and compares and hashes equal to it.
+/// [`DmxValue::is_substituted`] is the only thing that separates them.
+impl PartialEq for DmxValue {
+    fn eq(&self, other: &Self) -> bool {
+        self.bytes == other.bytes && self.value == other.value && self.shifting == other.shifting
+    }
+}
+
+impl Eq for DmxValue {}
+
+impl std::hash::Hash for DmxValue {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.bytes.hash(state);
+        self.value.hash(state);
+        self.shifting.hash(state);
+    }
 }
 
 impl DmxValue {
+    /// Whether this value was substituted by the parser because the source
+    /// text did not match the `Uint/n` DMXValue grammar.
+    ///
+    /// A substituted value is `0/1`, the default the GDTF specification
+    /// declares for `ChannelSet@DMXFrom`; the source text it replaced is not
+    /// retained. The corresponding [`ValidationError`](crate::ValidationError)
+    /// names the element it sits on.
+    pub const fn is_substituted(self) -> bool {
+        self.substituted
+    }
+
     /// The number of bytes of the associated `value`.
     pub const fn bytes(self) -> NonZeroU8 {
         self.bytes
@@ -785,7 +876,17 @@ impl DmxValue {
                 value,
                 bytes,
                 shifting,
+                substituted: false,
             })
+        }
+    }
+
+    /// `0/1`, marked as standing in for source text that did not match the
+    /// `Uint/n` DMXValue grammar.
+    const fn substitute() -> Self {
+        DmxValue {
+            substituted: true,
+            ..DmxValue::new_u8(0, false)
         }
     }
 
@@ -795,6 +896,7 @@ impl DmxValue {
             value: value as u64,
             bytes: unsafe { NonZeroU8::new_unchecked(1) },
             shifting,
+            substituted: false,
         }
     }
 
@@ -804,6 +906,7 @@ impl DmxValue {
             value: value as u64,
             bytes: unsafe { NonZeroU8::new_unchecked(2) },
             shifting,
+            substituted: false,
         }
     }
 
@@ -813,6 +916,7 @@ impl DmxValue {
             value: value as u64,
             bytes: unsafe { NonZeroU8::new_unchecked(4) },
             shifting,
+            substituted: false,
         }
     }
 
@@ -822,6 +926,7 @@ impl DmxValue {
             value,
             bytes: unsafe { NonZeroU8::new_unchecked(8) },
             shifting,
+            substituted: false,
         }
     }
 
@@ -914,8 +1019,19 @@ impl<'de> Deserialize<'de> for DmxValue {
             where
                 E: Error,
             {
+                // A value that does not match the `Uint/n` grammar degrades
+                // this one element; it never fails the archive. One malformed
+                // `DMXFrom=` costs a whole fixture otherwise, and it is
+                // usually on a channel set the reader never looks at.
+                //
+                // The substitute is `0/1`, which is both the default the GDTF
+                // specification declares for `ChannelSet@DMXFrom` and what
+                // libMVRgdtf writes when its own conversion rejects the text
+                // (`dmxValueRaw = 0; byteSpecifier = 1;` in
+                // GdtfConverter::ConvertDMXValue, which records an
+                // `eValueError_DmxValueHasWrongValue` and parses on).
                 let Some((value_str, bytes_str)) = v.split_once('/') else {
-                    return Err(E::invalid_value(Unexpected::Str(v), &self));
+                    return Ok(DmxValue::substitute());
                 };
 
                 let (bytes_str, shifting) = match bytes_str.strip_suffix('s') {
@@ -923,12 +1039,10 @@ impl<'de> Deserialize<'de> for DmxValue {
                     None => (bytes_str, false),
                 };
 
-                let value = value_str.parse::<u64>().map_err(|_| {
-                    E::invalid_value(Unexpected::Str(value_str), &"an integer between 0 and 2^64")
-                })?;
-                let bytes = bytes_str.parse::<u8>().map_err(|_| {
-                    E::invalid_value(Unexpected::Str(bytes_str), &"an integer between 0 and 2^8")
-                })?;
+                let (Ok(value), Ok(bytes)) = (value_str.parse::<u64>(), bytes_str.parse::<u8>())
+                else {
+                    return Ok(DmxValue::substitute());
+                };
 
                 let bytes = bytes.max(1);
                 let bits = bytes as u32 * 8;
@@ -939,6 +1053,7 @@ impl<'de> Deserialize<'de> for DmxValue {
                     value,
                     bytes: NonZeroU8::new(bytes).unwrap(),
                     shifting,
+                    substituted: false,
                 })
             }
         }
@@ -953,6 +1068,7 @@ impl Default for DmxValue {
             value: 0,
             bytes: NonZeroU8::new(1).unwrap(),
             shifting: false,
+            substituted: false,
         }
     }
 }
@@ -1066,4 +1182,164 @@ where
 {
     let str = String::deserialize(deserializer)?;
     Ok(if str.is_empty() { None } else { Some(str) })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{ColorCie, DmxValue};
+    use serde::Deserialize;
+    use serde::de::value::{Error as ValueError, StrDeserializer};
+
+    fn dmx(text: &str) -> DmxValue {
+        DmxValue::deserialize(StrDeserializer::<ValueError>::new(text))
+            .expect("a malformed DMXValue degrades to a substitute, it never fails the parse")
+    }
+
+    fn color(text: &str) -> ColorCie {
+        ColorCie::deserialize(StrDeserializer::<ValueError>::new(text))
+            .expect("a malformed ColorCIE degrades to a substitute, it never fails the parse")
+    }
+
+    // GDTF 1.2 (DIN SPEC 15800:2022) types `DMXValue` as `Uint/n`, and the
+    // published XSD pins the grammar to `None|([0-9]+/[1-9][0-9]*s?)`. A
+    // leading `-` is therefore not a DMXValue at all.
+    //
+    // The substituted value is `0/1`: that is both the spec's declared default
+    // for `ChannelSet@DMXFrom` and what libMVRgdtf writes when its own
+    // conversion rejects the text (`dmxValueRaw = 0; byteSpecifier = 1;` in
+    // GdtfConverter::ConvertDMXValue).
+    #[test]
+    fn a_signed_dmx_value_is_substituted_with_the_spec_default() {
+        let value = dmx("-255/4");
+        assert_eq!(value.value(), 0, "substitute is the spec default 0/1");
+        assert_eq!(value.bytes().get(), 1, "substitute is the spec default 0/1");
+        assert!(!value.shifting(), "the spec default is byte-mirroring");
+        assert!(
+            value.is_substituted(),
+            "the substitution must be recorded on the value, not swallowed"
+        );
+    }
+
+    #[test]
+    fn a_dmx_value_without_a_byte_count_is_substituted() {
+        let value = dmx("255");
+        assert_eq!((value.value(), value.bytes().get()), (0, 1));
+        assert!(value.is_substituted());
+    }
+
+    #[test]
+    fn a_dmx_value_with_a_non_numeric_byte_count_is_substituted() {
+        let value = dmx("128/x");
+        assert_eq!((value.value(), value.bytes().get()), (0, 1));
+        assert!(value.is_substituted());
+    }
+
+    #[test]
+    fn a_well_formed_dmx_value_is_untouched_and_unmarked() {
+        let value = dmx("65535/2");
+        assert_eq!((value.value(), value.bytes().get()), (65535, 2));
+        assert!(!value.shifting());
+        assert!(
+            !value.is_substituted(),
+            "a value that matched the grammar must not be reported as substituted"
+        );
+    }
+
+    #[test]
+    fn a_well_formed_shifting_dmx_value_is_untouched_and_unmarked() {
+        let value = dmx("255/1s");
+        assert_eq!((value.value(), value.bytes().get()), (255, 1));
+        assert!(value.shifting());
+        assert!(!value.is_substituted());
+    }
+
+    // Provenance is not part of the value. A substituted `0/1` addresses the
+    // same DMX slot as an authored `0/1`, so equality and hashing must not
+    // split them; only `is_substituted` distinguishes them.
+    #[test]
+    fn the_substitution_marker_is_not_part_of_dmx_value_equality() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+
+        let substituted = dmx("-255/4");
+        let authored = dmx("0/1");
+        assert_ne!(substituted.is_substituted(), authored.is_substituted());
+        assert_eq!(
+            substituted, authored,
+            "provenance must not change what the value means"
+        );
+
+        let hash = |v: DmxValue| {
+            let mut h = DefaultHasher::new();
+            v.hash(&mut h);
+            h.finish()
+        };
+        assert_eq!(hash(substituted), hash(authored));
+    }
+
+    // `-nan(ind)` is MSVC's rendering of an indefinite NaN (documented in
+    // Microsoft's printf format specification), emitted when a fixture builder
+    // formats a NaN it computed. GDTF types `ColorCIE` as three floats and the
+    // XSD pins each to `-?[0-9]+(\.[0-9]+)?`, so it is not a ColorCIE.
+    //
+    // The substitute is the spec's own white point, `{0.3127, 0.3290, 100.0}`.
+    // Both reference parsers agree: libMVRgdtf falls back to a
+    // default-constructed `CCieColor` (its stated "pure white") and pygdtf's
+    // `ColorCIE` except-branch falls back to the same white.
+    #[test]
+    fn an_msvc_indefinite_nan_color_is_substituted_with_the_white_point() {
+        let value = color("-nan(ind),-nan(ind),-nan(ind)");
+        assert_eq!((value.x, value.y, value.z), (0.3127, 0.3290, 100.0));
+        assert!(
+            value.is_substituted(),
+            "the substitution must be recorded on the value, not swallowed"
+        );
+    }
+
+    // The bare `nan` spelling parses as a float in Rust, C and Python, so every
+    // parser accepts it silently and a NaN reaches the colour path. It is no
+    // more a ColorCIE than `-nan(ind)` is, and it comes from the same authoring
+    // bug, so it degrades the same way rather than propagating a NaN.
+    #[test]
+    fn a_non_finite_color_component_is_substituted_with_the_white_point() {
+        for text in ["nan,nan,nan", "0.3,nan,100", "inf,0.3,100", "0.3,0.3,-inf"] {
+            let value = color(text);
+            assert_eq!(
+                (value.x, value.y, value.z),
+                (0.3127, 0.3290, 100.0),
+                "{text} carries a non-finite component and is not a ColorCIE"
+            );
+            assert!(value.is_substituted(), "{text} must be recorded");
+        }
+    }
+
+    #[test]
+    fn a_color_with_the_wrong_arity_is_substituted_with_the_white_point() {
+        for text in ["0.3,0.3", "", "garbage"] {
+            let value = color(text);
+            assert_eq!((value.x, value.y, value.z), (0.3127, 0.3290, 100.0));
+            assert!(value.is_substituted(), "{text} must be recorded");
+        }
+    }
+
+    #[test]
+    fn a_well_formed_color_is_untouched_and_unmarked() {
+        let value = color("0.64,0.33,21.262754");
+        assert_eq!((value.x, value.y, value.z), (0.64, 0.33, 21.262754));
+        assert!(
+            !value.is_substituted(),
+            "a value that matched the grammar must not be reported as substituted"
+        );
+    }
+
+    #[test]
+    fn the_substitution_marker_is_not_part_of_color_equality() {
+        let substituted = color("-nan(ind),-nan(ind),-nan(ind)");
+        let authored = color("0.3127,0.3290,100.0");
+        assert_ne!(substituted.is_substituted(), authored.is_substituted());
+        assert_eq!(
+            substituted, authored,
+            "provenance must not change what the value means"
+        );
+    }
 }

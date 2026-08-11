@@ -101,6 +101,14 @@ pub enum ValidationErrorType {
 
     /// CRI group had a duplicate sample.
     DuplicateCriSample(Ces),
+
+    /// An XML attribute's source text did not match the grammar the GDTF
+    /// specification defines for its type, so the parser substituted the
+    /// declared default and carried on rather than failing the whole file.
+    ///
+    /// Holds the name of the offending XML attribute, for example `DMXFrom` or
+    /// `Color`. The substituted value is on the object this error names.
+    SubstitutedValue(&'static str),
 }
 
 impl Display for ValidationErrorType {
@@ -131,6 +139,9 @@ impl Display for ValidationErrorType {
             ValidationErrorType::EmptyProfile => write!(f, "no points"),
             ValidationErrorType::DuplicatePoint(point) => write!(f, "duplicate point `{point}`"),
             ValidationErrorType::DuplicateCriSample(ces) => write!(f, "duplicate sample `{ces}`"),
+            ValidationErrorType::SubstitutedValue(attribute) => {
+                write!(f, "malformed `{attribute}`, substituted the default")
+            }
         }
     }
 }

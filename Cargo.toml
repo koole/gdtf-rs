@@ -16,3 +16,6 @@ serde_path_to_error = "0.1"
 thiserror = "2.0"
 uuid = { version = "1.10", features = ["serde"] }
 zip = { version = "8.6", default-features = false, features = ["deflate"] }
+
+[dev-dependencies]
+zip = { version = "8.6", default-features = false, features = ["deflate"] }

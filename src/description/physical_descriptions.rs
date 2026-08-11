@@ -754,7 +754,7 @@ mod serialize_gamut_points {
                         E::invalid_value(Unexpected::Str(z), &"a floating point number")
                     })?;
 
-                    points.push(ColorCie { x, y, z });
+                    points.push(ColorCie::new(x, y, z));
 
                     v = a.trim();
                 }
@@ -1164,21 +1164,9 @@ mod tests {
         assert_eq!(
             g.points,
             &[
-                ColorCie {
-                    x: 0.64,
-                    y: 0.33,
-                    z: 21.262754
-                },
-                ColorCie {
-                    x: 0.30,
-                    y: 0.60,
-                    z: 71.516600
-                },
-                ColorCie {
-                    x: 0.15,
-                    y: 0.06,
-                    z: 7.224500
-                },
+                ColorCie::new(0.64, 0.33, 21.262754),
+                ColorCie::new(0.30, 0.60, 71.516600),
+                ColorCie::new(0.15, 0.06, 7.224500),
             ]
         );
     }

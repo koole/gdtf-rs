@@ -1194,6 +1194,14 @@ impl ChannelSet {
     ) {
         let name = self.name.as_ref();
 
+        if self.dmx_from.is_substituted() {
+            result.errors.push(ValidationError::new(
+                ValidationObject::ChannelSet,
+                name.map(Name::to_string),
+                ValidationErrorType::SubstitutedValue("DMXFrom"),
+            ));
+        }
+
         if let (Some(wheel_slot_index), Some(wheel)) = (
             self.wheel_slot_index,
             parent_channel_function.wheel(parent_fixture_type),

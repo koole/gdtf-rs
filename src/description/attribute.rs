@@ -391,6 +391,14 @@ impl Attribute {
 
         let name = self.name.as_ref();
 
+        if self.color.is_some_and(ColorCie::is_substituted) {
+            result.errors.push(ValidationError::new(
+                ValidationObject::Attribute,
+                name.map(Name::to_string),
+                ValidationErrorType::SubstitutedValue("Color"),
+            ));
+        }
+
         if let (Some(activation_group), None) = (
             &self.activation_group,
             self.activation_group(parent_attribute_definitions),
