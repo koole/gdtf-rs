@@ -46,7 +46,7 @@
 //! ```
 
 use serde::Deserializer;
-use serde::de::{Error, Unexpected, Visitor};
+use serde::de::{Error, IgnoredAny, MapAccess, Unexpected, Visitor};
 use std::fmt::Formatter;
 use std::marker::PhantomData;
 use std::str::FromStr;
@@ -136,5 +136,93 @@ where
         D: Deserializer<'de>,
     {
         T::deserialize(deserializer).map(Some)
+    }
+}
+
+/// Generates the `with` module for the `Other` variant of an internally tagged enum, which holds
+/// a tag value the GDTF specification does not define.
+///
+/// The variant is marked `#[serde(untagged)]`, so serde tries it only once every defined variant
+/// has failed. Deserialization then reads the tag attribute verbatim, but refuses a defined value:
+/// a defined variant whose own attributes are malformed stays an error rather than being recast
+/// as `Other`. Serialization writes the value back as the tag attribute.
+///
+/// ```ignore
+/// define_undefined_tag_helper!(mod other_support_type "@SupportType" ["Rope", "GroundSupport"]);
+/// ```
+macro_rules! define_undefined_tag_helper {
+    (mod $modname:ident $tag:literal [$($defined:literal),+ $(,)?]) => {
+        mod $modname {
+            const DEFINED: &[&str] = &[$($defined),+];
+
+            pub fn serialize<S>(value: &str, serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: ::serde::Serializer,
+            {
+                use ::serde::ser::SerializeMap;
+
+                let mut map = serializer.serialize_map(Some(1))?;
+                map.serialize_entry($tag, value)?;
+                map.end()
+            }
+
+            pub fn deserialize<'de, D>(deserializer: D) -> Result<String, D::Error>
+            where
+                D: ::serde::Deserializer<'de>,
+            {
+                $crate::description::parse_helper::deserialize_undefined_tag(
+                    deserializer,
+                    $tag,
+                    DEFINED,
+                )
+            }
+        }
+    };
+}
+
+/// Reads the value of the `tag` attribute from a map, failing if it is one of `defined`.
+pub fn deserialize_undefined_tag<'de, D>(
+    deserializer: D,
+    tag: &'static str,
+    defined: &'static [&'static str],
+) -> Result<String, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    deserializer.deserialize_map(UndefinedTagVisitor { tag, defined })
+}
+
+struct UndefinedTagVisitor {
+    tag: &'static str,
+    defined: &'static [&'static str],
+}
+
+impl<'de> Visitor<'de> for UndefinedTagVisitor {
+    type Value = String;
+
+    fn expecting(&self, formatter: &mut Formatter) -> std::fmt::Result {
+        write!(formatter, "a `{}` attribute", self.tag)
+    }
+
+    fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
+    where
+        A: MapAccess<'de>,
+    {
+        let mut value = None;
+        while let Some(key) = map.next_key::<String>()? {
+            if key == self.tag {
+                value = Some(map.next_value::<String>()?);
+            } else {
+                map.next_value::<IgnoredAny>()?;
+            }
+        }
+        let value = value.ok_or_else(|| A::Error::missing_field(self.tag))?;
+        if self.defined.contains(&value.as_str()) {
+            return Err(A::Error::invalid_value(
+                Unexpected::Str(&value),
+                &"a value the GDTF specification does not define",
+            ));
+        }
+        Ok(value)
     }
 }

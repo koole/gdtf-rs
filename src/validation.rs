@@ -109,6 +109,13 @@ pub enum ValidationErrorType {
     /// Holds the name of the offending XML attribute, for example `DMXFrom` or
     /// `Color`. The substituted value is on the object this error names.
     SubstitutedValue(&'static str),
+
+    /// An enumerated XML attribute held a value the GDTF specification does not define, so the
+    /// parser kept it verbatim in the enum's `Other` variant rather than failing the whole file.
+    ///
+    /// Holds the name of the XML attribute, for example `ComponentType`, and its value, for
+    /// example `VMXInput`.
+    UndefinedValue(&'static str, String),
 }
 
 impl Display for ValidationErrorType {
@@ -141,6 +148,9 @@ impl Display for ValidationErrorType {
             ValidationErrorType::DuplicateCriSample(ces) => write!(f, "duplicate sample `{ces}`"),
             ValidationErrorType::SubstitutedValue(attribute) => {
                 write!(f, "malformed `{attribute}`, substituted the default")
+            }
+            ValidationErrorType::UndefinedValue(attribute, value) => {
+                write!(f, "undefined `{attribute}` value `{value}`")
             }
         }
     }

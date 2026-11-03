@@ -10,6 +10,7 @@ use std::str::FromStr;
 
 #[macro_use]
 mod collect_helper;
+#[macro_use]
 mod parse_helper;
 mod util;
 
