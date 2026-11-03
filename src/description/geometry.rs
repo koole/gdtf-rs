@@ -225,6 +225,29 @@ impl AnyGeometry for Geometry {
             Geometry::Magnet(g) => g.children(),
         }
     }
+
+    fn validate_custom(&self, parent_fixture_type: &FixtureType, result: &mut ValidationResult) {
+        match self {
+            Geometry::Generic(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Axis(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::FilterBeam(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::FilterColor(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::FilterGobo(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::FilterShaper(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Beam(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::MediaServerLayer(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::MediaServerCamera(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::MediaServerMaster(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Display(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Reference(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Laser(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::WiringObject(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Inventory(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Structure(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Support(g) => g.validate_custom(parent_fixture_type, result),
+            Geometry::Magnet(g) => g.validate_custom(parent_fixture_type, result),
+        }
+    }
 }
 
 macro_rules! impl_any_geometry {
@@ -1183,16 +1206,50 @@ impl AnyGeometry for WiringObjectGeometry {
     }
 
     fn validate_custom(&self, parent_fixture_type: &FixtureType, result: &mut ValidationResult) {
+        if let ComponentType::Other(value) = &self.component_type {
+            report_undefined_value(self, "ComponentType", value, result);
+        }
+        if let ComponentType::Fuse {
+            fuse_rating: Some(FuseRating::Other(value)),
+            ..
+        } = &self.component_type
+        {
+            report_undefined_value(self, "FuseRating", value, result);
+        }
+        if let Orientation::Other(value) = &self.orientation {
+            report_undefined_value(self, "Orientation", value, result);
+        }
+
         for pin_patch in &self.pin_patches {
             pin_patch.validate(parent_fixture_type, result);
         }
     }
 }
 
+/// Reports an enumerated attribute of `geometry` that holds a value the specification does not
+/// define.
+fn report_undefined_value(
+    geometry: &impl AnyGeometry,
+    attribute: &'static str,
+    value: &str,
+    result: &mut ValidationResult,
+) {
+    result.errors.push(ValidationError::new(
+        ValidationObject::Geometry,
+        geometry.name().map(Name::to_string),
+        ValidationErrorType::UndefinedValue(attribute, value.to_owned()),
+    ));
+}
+
 /// The type of electrical component used in a wiring object represented by a
 /// [WiringObjectGeometry].
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "@ComponentType")]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+// When a defined variant fails on a malformed attribute of its own, serde reports this text in
+// place of the variant's error, since the `untagged` fallback discards it.
+#[serde(
+    tag = "@ComponentType",
+    expecting = "a defined ComponentType with well-formed attributes, or an undefined ComponentType"
+)]
 pub enum ComponentType {
     /// Input component.
     Input,
@@ -1336,10 +1393,33 @@ pub enum ComponentType {
 
     /// Network input/output component.
     NetworkInOut,
+
+    /// A component type the GDTF specification does not define, holding the `ComponentType`
+    /// value verbatim, for example the `VMXInput` and `VMXOutput` Martin Professional uses on
+    /// VMX data connectors.
+    ///
+    /// An undefined component type degrades this one wiring object rather than failing the whole
+    /// file. Its component-specific attributes such as `Voltage` are not read, since the
+    /// specification attaches none to an undefined type. Validation reports it as
+    /// [ValidationErrorType::UndefinedValue].
+    #[serde(untagged, with = "other_component_type")]
+    Other(String),
 }
 
+define_undefined_tag_helper!(mod other_component_type "@ComponentType" [
+    "Input",
+    "Output",
+    "PowerSource",
+    "Consumer",
+    "Fuse",
+    "NetworkProvider",
+    "NetworkInput",
+    "NetworkOutput",
+    "NetworkInOut",
+]);
+
 /// Fuse rating for a fuse represented by a [WiringObjectGeometry].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum FuseRating {
     /// Type B fuse.
     B,
@@ -1355,10 +1435,15 @@ pub enum FuseRating {
 
     /// Type Z fuse.
     Z,
+
+    /// A fuse rating the GDTF specification does not define, holding the `FuseRating` value
+    /// verbatim. Validation reports it as [ValidationErrorType::UndefinedValue].
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// Where the pins represented by a [WiringObjectGeometry] are located.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum Orientation {
     /// Pins face left.
     Left,
@@ -1371,6 +1456,11 @@ pub enum Orientation {
 
     /// Pins face below.
     Bottom,
+
+    /// An orientation the GDTF specification does not define, holding the `Orientation` value
+    /// verbatim. Validation reports it as [ValidationErrorType::UndefinedValue].
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// Specifies how the different sockets of a wiring object are connected to the pins of other wiring
@@ -1508,7 +1598,26 @@ pub struct StructureGeometry {
     pub cross_section_type: CrossSectionType,
 }
 
-impl_any_geometry!(StructureGeometry);
+impl AnyGeometry for StructureGeometry {
+    fn name(&self) -> Option<&Name> {
+        self.name.as_ref()
+    }
+    fn model_name(&self) -> Option<&Name> {
+        self.model.as_ref()
+    }
+    fn children(&self) -> &[Geometry] {
+        &self.children
+    }
+
+    fn validate_custom(&self, _parent_fixture_type: &FixtureType, result: &mut ValidationResult) {
+        if let StructureType::Other(value) = &self.structure_type {
+            report_undefined_value(self, "StructureType", value, result);
+        }
+        if let CrossSectionType::Other(value) = &self.cross_section_type {
+            report_undefined_value(self, "CrossSectionType", value, result);
+        }
+    }
+}
 
 impl StructureGeometry {
     /// Looks up the [Geometry] linked by this geometry.
@@ -1521,18 +1630,28 @@ impl StructureGeometry {
 }
 
 /// The type of structure represented by a [StructureGeometry].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum StructureType {
     /// Structure describes a center line.
     CenterLineBased,
 
     /// Structure describes detail.
     Detail,
+
+    /// A structure type the GDTF specification does not define, holding the `StructureType`
+    /// value verbatim. Validation reports it as [ValidationErrorType::UndefinedValue].
+    #[serde(untagged)]
+    Other(String),
 }
 
 /// The type of cross section of the structure represented by a [StructureGeometry].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "@CrossSectionType")]
+// When a defined variant fails on a malformed attribute of its own, serde reports this text in
+// place of the variant's error, since the `untagged` fallback discards it.
+#[serde(
+    tag = "@CrossSectionType",
+    expecting = "a defined CrossSectionType with well-formed attributes, or an undefined CrossSectionType"
+)]
 pub enum CrossSectionType {
     /// Structure has a truss framework cross section.
     TrussFramework {
@@ -1563,7 +1682,15 @@ pub enum CrossSectionType {
         )]
         wall_thickness: f64,
     },
+
+    /// A cross section type the GDTF specification does not define, holding the
+    /// `CrossSectionType` value verbatim. Its cross section attributes are not read. Validation
+    /// reports it as [ValidationErrorType::UndefinedValue].
+    #[serde(untagged, with = "other_cross_section_type")]
+    Other(String),
 }
+
+define_undefined_tag_helper!(mod other_cross_section_type "@CrossSectionType" ["TrussFramework", "Tube"]);
 
 /// Defines device parts with a support.
 ///
@@ -1640,11 +1767,32 @@ pub struct SupportGeometry {
     pub capacity_zz: f64,
 }
 
-impl_any_geometry!(SupportGeometry);
+impl AnyGeometry for SupportGeometry {
+    fn name(&self) -> Option<&Name> {
+        self.name.as_ref()
+    }
+    fn model_name(&self) -> Option<&Name> {
+        self.model.as_ref()
+    }
+    fn children(&self) -> &[Geometry] {
+        &self.children
+    }
+
+    fn validate_custom(&self, _parent_fixture_type: &FixtureType, result: &mut ValidationResult) {
+        if let SupportType::Other(value) = &self.support_type {
+            report_undefined_value(self, "SupportType", value, result);
+        }
+    }
+}
 
 /// The type of support represented by a [SupportGeometry].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "@SupportType")]
+// When a defined variant fails on a malformed attribute of its own, serde reports this text in
+// place of the variant's error, since the `untagged` fallback discards it.
+#[serde(
+    tag = "@SupportType",
+    expecting = "a defined SupportType with well-formed attributes, or an undefined SupportType"
+)]
 pub enum SupportType {
     /// Support is a rope.
     Rope {
@@ -1699,7 +1847,15 @@ pub enum SupportType {
         #[serde(rename = "@ResistanceZZ", deserialize_with = "Parse::deserialize")]
         resistance_zz: f64,
     },
+
+    /// A support type the GDTF specification does not define, holding the `SupportType` value
+    /// verbatim. Its type-specific attributes are not read. Validation reports it as
+    /// [ValidationErrorType::UndefinedValue].
+    #[serde(untagged, with = "other_support_type")]
+    Other(String),
 }
+
+define_undefined_tag_helper!(mod other_support_type "@SupportType" ["Rope", "GroundSupport"]);
 
 /// Defines device parts with a magnet.
 ///
